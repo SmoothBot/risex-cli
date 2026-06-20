@@ -56,3 +56,36 @@ impl std::fmt::Display for Network {
         f.write_str(self.label())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_is_testnet() {
+        assert_eq!(Network::default(), Network::Testnet);
+    }
+
+    #[test]
+    fn testnet_endpoints() {
+        let n = Network::Testnet;
+        assert_eq!(n.rest_base(), "https://api.testnet.rise.trade");
+        assert_eq!(n.ws_url(), "wss://ws.testnet.rise.trade/ws");
+        assert_eq!(n.chain_id(), 11155931);
+        assert_eq!(n.rpc_url(), "https://testnet.riselabs.xyz");
+    }
+
+    #[test]
+    fn mainnet_endpoints() {
+        let n = Network::Mainnet;
+        assert_eq!(n.rest_base(), "https://api.rise.trade");
+        assert_eq!(n.ws_url(), "wss://ws.rise.trade/ws");
+        assert_eq!(n.chain_id(), 4153);
+    }
+
+    #[test]
+    fn display_is_lowercase_label() {
+        assert_eq!(Network::Testnet.to_string(), "testnet");
+        assert_eq!(Network::Mainnet.to_string(), "mainnet");
+    }
+}
