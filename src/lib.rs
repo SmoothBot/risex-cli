@@ -3,22 +3,12 @@
 pub mod config;
 pub mod errors;
 pub mod network;
+pub mod output;
 
 use clap::{Parser, Subcommand};
 
 use network::Network;
 use output::OutputFormat;
-
-pub mod output {
-    //! Placeholder re-exported in Task 5. Defined minimally so `Cli` compiles.
-    use clap::ValueEnum;
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-    pub enum OutputFormat {
-        Table,
-        Json,
-    }
-}
 
 /// Runtime context assembled from global CLI flags and config.
 pub struct AppContext {
