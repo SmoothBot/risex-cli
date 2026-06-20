@@ -2,16 +2,11 @@
 //! NOT hardcoded here — they are fetched at runtime per network in later phases.
 use clap::ValueEnum;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 pub enum Network {
+    #[default]
     Testnet,
     Mainnet,
-}
-
-impl Default for Network {
-    fn default() -> Self {
-        Network::Testnet
-    }
 }
 
 impl Network {
