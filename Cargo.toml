@@ -1,0 +1,37 @@
+[package]
+name = "risex-cli"
+version = "0.1.0"
+edition = "2021"
+description = "RISEx CLI — trade and query the RISEx perpetuals DEX from the terminal"
+license = "MIT"
+repository = "https://github.com/riselabs-xyz/risex-cli"
+
+[lib]
+name = "risex_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "risex"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+url = "2"
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1"
+thiserror = "2"
+dirs = "6"
+comfy-table = "7"
+colored = "3"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+wiremock = "0.6"
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
