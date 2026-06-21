@@ -16,6 +16,7 @@ pub enum MarketCommand {
         market: String,
         depth: u32,
         aggregate: Option<f64>,
+        no_agg: bool,
         amount: bool,
     },
     Trades {
@@ -46,8 +47,9 @@ pub async fn execute(
             market,
             depth,
             aggregate,
+            no_agg,
             amount,
-        } => orderbook(client, market, *depth, *aggregate, *amount, verbose).await,
+        } => orderbook(client, market, *depth, *aggregate, *no_agg, *amount, verbose).await,
         MarketCommand::Trades { market, limit } => trades(client, market, *limit, verbose).await,
         MarketCommand::Candles {
             market,
@@ -131,6 +133,36 @@ async fn resolve_market_id(client: &RestClient, input: &str, verbose: bool) -> R
         "unknown market '{input}'. Available: {}",
         available.join(", ")
     )))
+}
+
+/// Resolve a user-supplied identifier to the full market JSON object (so the
+/// caller can read its tick / config). Always consults `/v1/markets`.
+async fn resolve_market(client: &RestClient, input: &str, verbose: bool) -> Result<Value> {
+    let data = client.public_get("/v1/markets", &[], verbose).await?;
+    let empty = vec![];
+    let list = data
+        .get("markets")
+        .and_then(|m| m.as_array())
+        .unwrap_or(&empty);
+    if let Some(m) = list.iter().find(|m| market_matches(m, input)) {
+        return Ok((*m).clone());
+    }
+    let available: Vec<String> = list
+        .iter()
+        .map(|m| s(m, "display_name"))
+        .filter(|n| !n.is_empty())
+        .take(12)
+        .collect();
+    Err(RisexError::Validation(format!(
+        "unknown market '{input}'. Available: {}",
+        available.join(", ")
+    )))
+}
+
+/// Default aggregation bucket for a market, derived from its price tick.
+/// ~100× the tick: BTC (tick 0.1) → 10, ETH (0.01) → 1, etc.
+fn default_agg(step_price: f64) -> f64 {
+    step_price * 100.0
 }
 
 async fn markets(
@@ -324,10 +356,29 @@ async fn orderbook(
     market: &str,
     depth: u32,
     aggregate_tick: Option<f64>,
+    no_agg: bool,
     amount: bool,
     verbose: bool,
 ) -> Result<CommandOutput> {
-    let market_id = resolve_market_id(client, market, verbose).await?;
+    let m = resolve_market(client, market, verbose).await?;
+    let market_id = s(&m, "market_id");
+    let step_price = m
+        .get("config")
+        .and_then(|c| c.get("step_price"))
+        .and_then(|v| v.as_str())
+        .and_then(|x| x.parse::<f64>().ok());
+
+    // Effective aggregation: --no-agg disables it; an explicit -a wins; otherwise
+    // default to a per-market bucket derived from the tick.
+    let aggregate_tick: Option<f64> = if no_agg {
+        None
+    } else {
+        aggregate_tick.or_else(|| step_price.map(default_agg))
+    };
+    if verbose {
+        crate::output::verbose(&format!("aggregation bucket: {aggregate_tick:?}"));
+    }
+
     // When aggregating, pull a wider raw set so buckets have levels to gather.
     let raw_limit: u32 = if aggregate_tick.is_some() {
         500
@@ -386,10 +437,16 @@ async fn orderbook(
             depth_bar(measure(c), max_measure, BAR_WIDTH),
         ]);
     }
-    // Spread divider row, with the spread in bps, between asks and bids.
-    if let (Some(best_ask), Some(best_bid)) = (ask_cum.first(), bid_cum.first()) {
-        let bps = spread_bps(best_bid.price, best_ask.price);
-        let gap = best_ask.price - best_bid.price;
+    // Spread divider row. Use the RAW best bid/ask (pre-aggregation) so the
+    // bps reflects the true top-of-book, not the bucket width.
+    let best_ask_px = asks
+        .iter()
+        .map(|(p, _)| *p)
+        .fold(f64::INFINITY, f64::min);
+    let best_bid_px = bids.iter().map(|(p, _)| *p).fold(f64::NEG_INFINITY, f64::max);
+    if best_ask_px.is_finite() && best_bid_px.is_finite() {
+        let bps = spread_bps(best_bid_px, best_ask_px);
+        let gap = best_ask_px - best_bid_px;
         rows.push(vec![
             "spread".into(),
             fmt_trim(gap),

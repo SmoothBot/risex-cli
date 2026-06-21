@@ -78,14 +78,18 @@ pub enum Command {
     },
     /// Show the order book for a market.
     Orderbook {
-        /// Market id or display name.
+        /// Market id, ticker, or name (btc, bitcoin, BTC/USDC, 1).
         market: String,
         /// Number of price levels per side.
-        #[arg(long, default_value = "20")]
+        #[arg(long, default_value = "10")]
         depth: u32,
         /// Aggregate price levels into buckets of this size (quote/USD units).
+        /// Defaults to a per-market bucket (~100× the tick); use --no-agg for raw levels.
         #[arg(long, short = 'a')]
         aggregate: Option<f64>,
+        /// Disable aggregation and show raw tick-level depth.
+        #[arg(long = "no-agg", conflicts_with = "aggregate")]
+        no_agg: bool,
         /// Show base amount instead of notional (USD) value.
         #[arg(long)]
         amount: bool,
@@ -136,11 +140,13 @@ pub async fn execute_command(ctx: &AppContext, command: Command) -> Result<Comma
             market,
             depth,
             aggregate,
+            no_agg,
             amount,
         } => MarketCommand::Orderbook {
             market,
             depth,
             aggregate,
+            no_agg,
             amount,
         },
         Command::Trades { market, limit } => MarketCommand::Trades { market, limit },
