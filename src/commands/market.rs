@@ -193,9 +193,9 @@ async fn markets(
             vec![
                 s(m, "market_id"),
                 s(m, "display_name"),
-                s(m, "last_price"),
-                s(m, "mark_price"),
-                s(m, "index_price"),
+                fmt_price_to_tick(m, "last_price"),
+                fmt_price_to_tick(m, "mark_price"),
+                fmt_price_to_tick(m, "index_price"),
             ]
         })
         .collect();
@@ -216,9 +216,12 @@ async fn ticker(client: &RestClient, market: &str, verbose: bool) -> Result<Comm
         .unwrap_or(Value::Null);
     let pairs = vec![
         ("market".into(), s(&found, "display_name")),
-        ("last_price".into(), s(&found, "last_price")),
-        ("mark_price".into(), s(&found, "mark_price")),
-        ("index_price".into(), s(&found, "index_price")),
+        ("last_price".into(), fmt_price_to_tick(&found, "last_price")),
+        ("mark_price".into(), fmt_price_to_tick(&found, "mark_price")),
+        (
+            "index_price".into(),
+            fmt_price_to_tick(&found, "index_price"),
+        ),
         ("change_24h".into(), s(&found, "change_24h")),
         (
             "current_funding_rate".into(),
@@ -314,6 +317,36 @@ fn fmt_trim(x: f64) -> String {
 /// Format a notional (USD) value with two decimals.
 fn fmt_usd(x: f64) -> String {
     format!("{x:.2}")
+}
+
+/// Number of fractional digits implied by a price tick string,
+/// e.g. "0.1" → 1, "0.001" → 3, "10" → 0.
+fn tick_decimals(step_price: &str) -> usize {
+    match step_price.split_once('.') {
+        Some((_, frac)) => frac.trim_end_matches('0').len(),
+        None => 0,
+    }
+}
+
+/// Format a market's price field (`last_price`/`mark_price`/`index_price`) to
+/// the precision of that market's tick, so we don't render 18-decimal noise.
+fn fmt_price_to_tick(m: &Value, value_key: &str) -> String {
+    let raw = s(m, value_key);
+    let step = m
+        .get("config")
+        .and_then(|c| c.get("step_price"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if step.is_empty() {
+        return raw;
+    }
+    match raw.parse::<f64>() {
+        Ok(v) => {
+            let dec = tick_decimals(step);
+            format!("{v:.dec$}")
+        }
+        Err(_) => raw,
+    }
 }
 
 /// A level with running totals accumulated outward from the best price.
