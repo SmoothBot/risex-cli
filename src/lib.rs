@@ -83,6 +83,12 @@ pub enum Command {
         /// Number of price levels per side.
         #[arg(long, default_value = "20")]
         depth: u32,
+        /// Aggregate price levels into buckets of this size (quote/USD units).
+        #[arg(long, short = 'a')]
+        aggregate: Option<f64>,
+        /// Show base amount instead of notional (USD) value.
+        #[arg(long)]
+        amount: bool,
     },
     /// Show recent trades for a market.
     Trades {
@@ -126,7 +132,17 @@ pub async fn execute_command(ctx: &AppContext, command: Command) -> Result<Comma
     let market_cmd = match command {
         Command::Markets { market } => MarketCommand::Markets { market },
         Command::Ticker { market } => MarketCommand::Ticker { market },
-        Command::Orderbook { market, depth } => MarketCommand::Orderbook { market, depth },
+        Command::Orderbook {
+            market,
+            depth,
+            aggregate,
+            amount,
+        } => MarketCommand::Orderbook {
+            market,
+            depth,
+            aggregate,
+            amount,
+        },
         Command::Trades { market, limit } => MarketCommand::Trades { market, limit },
         Command::Candles {
             market,
