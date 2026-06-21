@@ -2,7 +2,7 @@
 use serde_json::Value;
 
 use crate::client::RestClient;
-use crate::errors::Result;
+use crate::errors::{Result, RisexError};
 use crate::output::CommandOutput;
 
 pub enum MarketCommand {
@@ -79,6 +79,60 @@ fn s(v: &Value, key: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Map a few common full asset names / synonyms to their base ticker so
+/// `bitcoin` resolves like `btc`.
+fn canonical_ticker(input: &str) -> &str {
+    match input {
+        "bitcoin" | "xbt" => "btc",
+        "ether" | "ethereum" => "eth",
+        "solana" => "sol",
+        "dogecoin" => "doge",
+        "binance" | "binancecoin" => "bnb",
+        other => other,
+    }
+}
+
+/// Does this market match a user-supplied identifier? Accepts the numeric
+/// market id, the display name (`BTC/USDC`), the compacted name (`btcusdc`),
+/// or the base ticker (`btc` / `bitcoin`). Case-insensitive.
+fn market_matches(m: &Value, needle: &str) -> bool {
+    let needle = needle.trim().to_ascii_lowercase();
+    let needle = canonical_ticker(&needle);
+    let id = s(m, "market_id").to_ascii_lowercase();
+    let name = s(m, "display_name").to_ascii_lowercase(); // e.g. "btc/usdc"
+    let base = name.split('/').next().unwrap_or("").to_string();
+    let compact = name.replace('/', "");
+    needle == id || needle == name || needle == base || needle == compact
+}
+
+/// Resolve a user-supplied market identifier to its numeric market id.
+/// Pure numeric input is passed through; otherwise `/v1/markets` is consulted.
+async fn resolve_market_id(client: &RestClient, input: &str, verbose: bool) -> Result<String> {
+    let trimmed = input.trim();
+    if !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_digit()) {
+        return Ok(trimmed.to_string());
+    }
+    let data = client.public_get("/v1/markets", &[], verbose).await?;
+    let empty = vec![];
+    let list = data
+        .get("markets")
+        .and_then(|m| m.as_array())
+        .unwrap_or(&empty);
+    if let Some(m) = list.iter().find(|m| market_matches(m, trimmed)) {
+        return Ok(s(m, "market_id"));
+    }
+    let available: Vec<String> = list
+        .iter()
+        .map(|m| s(m, "display_name"))
+        .filter(|n| !n.is_empty())
+        .take(12)
+        .collect();
+    Err(RisexError::Validation(format!(
+        "unknown market '{input}'. Available: {}",
+        available.join(", ")
+    )))
+}
+
 async fn markets(
     client: &RestClient,
     filter: Option<&str>,
@@ -100,7 +154,7 @@ async fn markets(
     let rows = list
         .iter()
         .filter(|m| match filter {
-            Some(f) => s(m, "display_name").eq_ignore_ascii_case(f) || s(m, "market_id") == f,
+            Some(f) => market_matches(m, f),
             None => true,
         })
         .map(|m| {
@@ -125,7 +179,7 @@ async fn ticker(client: &RestClient, market: &str, verbose: bool) -> Result<Comm
         .and_then(|m| m.as_array())
         .unwrap_or(&empty)
         .iter()
-        .find(|m| s(m, "display_name").eq_ignore_ascii_case(market) || s(m, "market_id") == market)
+        .find(|m| market_matches(m, market))
         .cloned()
         .unwrap_or(Value::Null);
     let pairs = vec![
@@ -273,6 +327,7 @@ async fn orderbook(
     amount: bool,
     verbose: bool,
 ) -> Result<CommandOutput> {
+    let market_id = resolve_market_id(client, market, verbose).await?;
     // When aggregating, pull a wider raw set so buckets have levels to gather.
     let raw_limit: u32 = if aggregate_tick.is_some() {
         500
@@ -283,7 +338,7 @@ async fn orderbook(
     let data = client
         .public_get(
             "/v1/orderbook",
-            &[("market_id", market), ("limit", &raw_limit_s)],
+            &[("market_id", &market_id), ("limit", &raw_limit_s)],
             verbose,
         )
         .await?;
@@ -361,11 +416,12 @@ async fn trades(
     limit: u32,
     verbose: bool,
 ) -> Result<CommandOutput> {
+    let market_id = resolve_market_id(client, market, verbose).await?;
     let limit_s = limit.to_string();
     let data = client
         .public_get(
             "/v1/trades",
-            &[("market_id", market), ("limit", &limit_s)],
+            &[("market_id", &market_id), ("limit", &limit_s)],
             verbose,
         )
         .await?;
@@ -398,7 +454,8 @@ async fn candles(
     to: Option<&str>,
     verbose: bool,
 ) -> Result<CommandOutput> {
-    let mut query: Vec<(&str, &str)> = vec![("market_id", market), ("resolution", resolution)];
+    let market_id = resolve_market_id(client, market, verbose).await?;
+    let mut query: Vec<(&str, &str)> = vec![("market_id", &market_id), ("resolution", resolution)];
     if let Some(f) = from {
         query.push(("from", f));
     }
@@ -437,8 +494,9 @@ async fn candles(
 }
 
 async fn funding(client: &RestClient, market: &str, verbose: bool) -> Result<CommandOutput> {
+    let market_id = resolve_market_id(client, market, verbose).await?;
     let data = client
-        .public_get("/v1/funding-rates", &[("market_id", market)], verbose)
+        .public_get("/v1/funding-rates", &[("market_id", &market_id)], verbose)
         .await?;
     Ok(CommandOutput::new(
         data.clone(),
