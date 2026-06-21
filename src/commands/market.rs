@@ -385,6 +385,32 @@ fn fmt_thousands(raw: &str, decimals: usize) -> String {
     out
 }
 
+/// Format an epoch timestamp (seconds, millis, or nanos) as UTC `YYYY-MM-DD HH:MM:SS`.
+fn fmt_ts(raw: &str) -> String {
+    let Ok(n) = raw.trim().parse::<i64>() else {
+        return raw.to_string();
+    };
+    let (secs, nsec) = if n >= 1_000_000_000_000_000_000 {
+        (n / 1_000_000_000, (n % 1_000_000_000) as u32) // nanoseconds
+    } else if n >= 1_000_000_000_000 {
+        (n / 1000, ((n % 1000) * 1_000_000) as u32) // milliseconds
+    } else {
+        (n, 0) // seconds
+    };
+    chrono::DateTime::from_timestamp(secs, nsec)
+        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_else(|| raw.to_string())
+}
+
+/// Normalize a side value (`0`/`1` or `BUY`/`SELL`) to `buy`/`sell`.
+fn fmt_side(raw: &str) -> String {
+    match raw.trim() {
+        "0" => "buy".to_string(),
+        "1" => "sell".to_string(),
+        other => other.to_ascii_lowercase(),
+    }
+}
+
 /// Number of fractional digits implied by a price tick string,
 /// e.g. "0.1" → 1, "0.001" → 3, "10" → 0.
 fn tick_decimals(step_price: &str) -> usize {
@@ -578,12 +604,9 @@ async fn trades(
 ) -> Result<CommandOutput> {
     let market_id = resolve_market_id(client, market, verbose).await?;
     let limit_s = limit.to_string();
+    let path = format!("/v1/markets/id/{market_id}/trade-history");
     let data = client
-        .public_get(
-            "/v1/trades",
-            &[("market_id", &market_id), ("limit", &limit_s)],
-            verbose,
-        )
+        .public_get(&path, &[("limit", &limit_s)], verbose)
         .await?;
     let empty = vec![];
     let list = data
@@ -591,15 +614,15 @@ async fn trades(
         .and_then(|t| t.as_array())
         .or_else(|| data.as_array())
         .unwrap_or(&empty);
-    let headers = vec!["Price".into(), "Size".into(), "Side".into(), "Time".into()];
+    let headers = vec!["Time".into(), "Side".into(), "Price".into(), "Size".into()];
     let rows = list
         .iter()
         .map(|t| {
             vec![
+                fmt_ts(&s(t, "time")),
+                fmt_side(&s(t, "maker_side")),
                 s(t, "price"),
                 s(t, "size"),
-                s(t, "maker_side"),
-                s(t, "timestamp"),
             ]
         })
         .collect();
@@ -615,18 +638,20 @@ async fn candles(
     verbose: bool,
 ) -> Result<CommandOutput> {
     let market_id = resolve_market_id(client, market, verbose).await?;
-    let mut query: Vec<(&str, &str)> = vec![("market_id", &market_id), ("resolution", resolution)];
+    let mut query: Vec<(&str, &str)> = vec![("resolution", resolution)];
     if let Some(f) = from {
         query.push(("from", f));
     }
     if let Some(t) = to {
         query.push(("to", t));
     }
-    let data = client.public_get("/v1/candles", &query, verbose).await?;
+    let path = format!("/v1/markets/id/{market_id}/trading-view-data");
+    let data = client.public_get(&path, &query, verbose).await?;
     let empty = vec![];
     let list = data
         .get("candles")
         .and_then(|c| c.as_array())
+        .or_else(|| data.get("data").and_then(|c| c.as_array()))
         .or_else(|| data.as_array())
         .unwrap_or(&empty);
     let headers = vec![
@@ -641,7 +666,7 @@ async fn candles(
         .iter()
         .map(|c| {
             vec![
-                s(c, "time"),
+                fmt_ts(&s(c, "time")),
                 s(c, "open"),
                 s(c, "high"),
                 s(c, "low"),
@@ -655,14 +680,28 @@ async fn candles(
 
 async fn funding(client: &RestClient, market: &str, verbose: bool) -> Result<CommandOutput> {
     let market_id = resolve_market_id(client, market, verbose).await?;
-    let data = client
-        .public_get("/v1/funding-rates", &[("market_id", &market_id)], verbose)
-        .await?;
-    Ok(CommandOutput::new(
-        data.clone(),
-        vec!["Funding".into()],
-        vec![vec![data.to_string()]],
-    ))
+    let path = format!("/v1/markets/id/{market_id}/funding-rate-history");
+    let data = client.public_get(&path, &[("limit", "50")], verbose).await?;
+    let empty = vec![];
+    let list = data
+        .get("records")
+        .and_then(|r| r.as_array())
+        .or_else(|| data.get("rates").and_then(|r| r.as_array()))
+        .or_else(|| data.as_array())
+        .unwrap_or(&empty);
+    let headers = vec!["Time".into(), "Funding Rate".into(), "Rate %".into()];
+    let rows = list
+        .iter()
+        .map(|r| {
+            let rate = s(r, "funding_rate");
+            let pct = rate
+                .parse::<f64>()
+                .map(|x| format!("{:.4}%", x * 100.0))
+                .unwrap_or_default();
+            vec![fmt_ts(&s(r, "block_time")), rate, pct]
+        })
+        .collect();
+    Ok(CommandOutput::new(data, headers, rows))
 }
 
 /// Render an ASCII depth bar for `qty` relative to `max`, up to `width` cells.
