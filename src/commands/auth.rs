@@ -75,13 +75,14 @@ async fn status(ctx: &AppContext) -> Result<CommandOutput> {
 }
 
 async fn login(ctx: &AppContext) -> Result<CommandOutput> {
-    let (signer, account) = ctx.signer_and_account()?;
+    let account = ctx.account()?;
+    let signer = ctx.optional_signer();
     let client = ctx.client()?;
     let token = session::ensure_token(
         &client,
-        &signer,
         &account,
         ctx.network.label(),
+        signer.as_ref(),
         ctx.verbose,
     )
     .await?;
@@ -162,14 +163,15 @@ async fn allowance(ctx: &AppContext) -> Result<CommandOutput> {
 }
 
 async fn refresh(ctx: &AppContext) -> Result<CommandOutput> {
-    let (signer, account) = ctx.signer_and_account()?;
+    let account = ctx.account()?;
+    let signer = ctx.optional_signer();
     let client = ctx.client()?;
     session::clear(ctx.network.label(), &account)?;
     let token = session::ensure_token(
         &client,
-        &signer,
         &account,
         ctx.network.label(),
+        signer.as_ref(),
         ctx.verbose,
     )
     .await?;

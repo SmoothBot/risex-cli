@@ -55,6 +55,37 @@ impl AppContext {
         let signer = signing::Signer::from_key(creds.private_key.expose())?;
         Ok((signer, creds.account))
     }
+
+    fn resolve_key(&self) -> Option<String> {
+        self.private_key
+            .clone()
+            .or_else(|| std::env::var("RISEX_PRIVATE_KEY").ok().filter(|s| !s.is_empty()))
+            .or_else(|| config::load().ok().and_then(|c| c.auth.private_key))
+    }
+
+    /// The account address: explicit (flag/env/config) else derived from the key.
+    pub fn account(&self) -> Result<String> {
+        if let Some(a) = self
+            .account
+            .clone()
+            .or_else(|| std::env::var("RISEX_ACCOUNT").ok().filter(|s| !s.is_empty()))
+            .or_else(|| config::load().ok().and_then(|c| c.auth.account))
+        {
+            return Ok(a);
+        }
+        let key = self.resolve_key().ok_or_else(|| {
+            errors::RisexError::Auth(
+                "No account configured. Run `risex auth connect` or set --account.".into(),
+            )
+        })?;
+        Ok(signing::Signer::from_key(&key)?.address())
+    }
+
+    /// A signer, only if a private key is resolvable.
+    pub fn optional_signer(&self) -> Option<signing::Signer> {
+        self.resolve_key()
+            .and_then(|k| signing::Signer::from_key(&k).ok())
+    }
 }
 
 /// RISEx CLI — trade and query the RISEx perpetuals DEX from the terminal.

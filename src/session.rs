@@ -68,12 +68,13 @@ fn write_0600(p: &PathBuf, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Return a valid access token, doing the minimum work: cached → refresh → login.
+/// Return a valid access token, doing the minimum work: cached → refresh →
+/// (login if a signer is available) → else ask the user to reconnect.
 pub async fn ensure_token(
     client: &RestClient,
-    signer: &Signer,
     account: &str,
     network_label: &str,
+    signer: Option<&Signer>,
     verbose: bool,
 ) -> Result<String> {
     let path = cache_path(network_label, account)?;
@@ -91,9 +92,26 @@ pub async fn ensure_token(
         }
     }
 
-    cache = login(client, signer, account, verbose).await?;
-    save_cache(&path, &cache)?;
-    Ok(cache.access_token)
+    match signer {
+        Some(s) => {
+            cache = login(client, s, account, verbose).await?;
+            save_cache(&path, &cache)?;
+            Ok(cache.access_token)
+        }
+        None => Err(RisexError::Auth(
+            "session expired — run `risex auth connect`".into(),
+        )),
+    }
+}
+
+/// Persist tokens from a login/approve response for `account` on `network`.
+pub fn store_tokens(
+    network_label: &str,
+    account: &str,
+    login_response: &serde_json::Value,
+) -> Result<()> {
+    let path = cache_path(network_label, account)?;
+    save_cache(&path, &apply_tokens(login_response))
 }
 
 /// Clear any cached session for this account/network.
@@ -167,5 +185,17 @@ mod tests {
         assert!(token_is_fresh(1000, 960)); // 40s left -> fresh
         assert!(!token_is_fresh(1000, 980)); // 20s left -> stale
         assert!(!token_is_fresh(1000, 1000)); // expired
+    }
+
+    #[tokio::test]
+    async fn ensure_token_without_signer_or_cache_asks_to_reconnect() {
+        // Unique account so no cache file exists; never hits the network.
+        let acct = "0xtest_no_session_0001";
+        let client = crate::client::RestClient::new("http://127.0.0.1:1").unwrap();
+        let err = ensure_token(&client, acct, "testnet", None, false)
+            .await
+            .unwrap_err();
+        assert_eq!(err.category(), "auth");
+        assert!(err.to_string().contains("auth connect"));
     }
 }
