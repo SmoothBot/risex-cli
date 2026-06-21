@@ -75,6 +75,125 @@ impl RestClient {
             }
         }
     }
+
+    /// POST a JSON body without a bearer token (for approve/login/refresh).
+    pub async fn post_signed(
+        &self,
+        path: &str,
+        body: serde_json::Value,
+        verbose: bool,
+    ) -> Result<Value> {
+        self.send_json(reqwest::Method::POST, path, &body, None, verbose)
+            .await
+    }
+
+    /// POST a JSON body with `Authorization: Bearer <token>`.
+    pub async fn post_bearer(
+        &self,
+        path: &str,
+        body: serde_json::Value,
+        token: &str,
+        verbose: bool,
+    ) -> Result<Value> {
+        self.send_json(reqwest::Method::POST, path, &body, Some(token), verbose)
+            .await
+    }
+
+    /// GET with `Authorization: Bearer <token>`.
+    pub async fn get_bearer(
+        &self,
+        path: &str,
+        query: &[(&str, &str)],
+        token: &str,
+        verbose: bool,
+    ) -> Result<Value> {
+        let url = format!("{}{}", self.base_url, path);
+        if verbose {
+            output::verbose(&format!("GET {url} {query:?} (bearer)"));
+        }
+        let mut req = self.http.get(&url).query(query).bearer_auth(token);
+        for (k, v) in telemetry::client_headers() {
+            req = req.header(k, v);
+        }
+        let resp = req.send().await.map_err(RisexError::from)?;
+        let status = resp.status();
+        let body = resp.text().await.map_err(RisexError::from)?;
+        parse_envelope(status, &body)
+    }
+
+    /// Shared JSON-body sender. Mutations are NOT retried (may have applied).
+    async fn send_json(
+        &self,
+        m: reqwest::Method,
+        path: &str,
+        body: &serde_json::Value,
+        token: Option<&str>,
+        verbose: bool,
+    ) -> Result<Value> {
+        let url = format!("{}{}", self.base_url, path);
+        if verbose {
+            output::verbose(&format!("{m} {url} {body}"));
+        }
+        let mut req = self.http.request(m, &url).json(body);
+        if let Some(t) = token {
+            req = req.bearer_auth(t);
+        }
+        for (k, v) in telemetry::client_headers() {
+            req = req.header(k, v);
+        }
+        let resp = req.send().await.map_err(RisexError::from)?;
+        let status = resp.status();
+        let text = resp.text().await.map_err(RisexError::from)?;
+        parse_envelope(status, &text)
+    }
+
+    /// Fetch the EIP-712 domain for this network.
+    pub async fn fetch_eip712_domain(&self, verbose: bool) -> Result<crate::signing::Eip712Domain> {
+        let d = self.public_get("/v1/auth/eip712-domain", &[], verbose).await?;
+        let get = |k: &str| {
+            d.get(k)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string()
+        };
+        let chain_id = get("chain_id")
+            .parse::<u64>()
+            .map_err(|_| RisexError::Parse("bad chain_id in eip712-domain".into()))?;
+        Ok(crate::signing::Eip712Domain {
+            name: get("name"),
+            version: get("version"),
+            chain_id,
+            verifying_contract: get("verifying_contract"),
+        })
+    }
+
+    /// Fetch the OperatorHub address from system config.
+    pub async fn fetch_operator_hub(&self, verbose: bool) -> Result<String> {
+        let d = self.public_get("/v1/system/config", &[], verbose).await?;
+        d.get("addresses")
+            .and_then(|a| a.get("operator_hub"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| RisexError::Parse("operator_hub missing in system config".into()))
+    }
+
+    /// Fetch `(nonce_anchor, current_bitmap_index)` for an account.
+    pub async fn fetch_nonce_state(&self, account: &str, verbose: bool) -> Result<(u64, u8)> {
+        let d = self
+            .public_get(&format!("/v1/nonce-state/{account}"), &[], verbose)
+            .await?;
+        let anchor = d
+            .get("nonce_anchor")
+            .and_then(|v| v.as_str())
+            .unwrap_or("0")
+            .parse::<u64>()
+            .unwrap_or(0);
+        let idx = d
+            .get("current_bitmap_index")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u8;
+        Ok((anchor, idx))
+    }
 }
 
 /// Sleep with exponential backoff before retry `attempt` (1-based).
