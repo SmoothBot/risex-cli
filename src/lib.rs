@@ -6,6 +6,7 @@ pub mod config;
 pub mod errors;
 pub mod network;
 pub mod output;
+pub mod session;
 pub mod signing;
 pub mod telemetry;
 
