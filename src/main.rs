@@ -26,6 +26,15 @@ async fn main() {
             .ok()
             .filter(|s| !s.is_empty())
     });
+    let private_key = cli.private_key.clone().or_else(|| {
+        std::env::var("RISEX_PRIVATE_KEY")
+            .ok()
+            .filter(|s| !s.is_empty())
+    });
+    let account = cli
+        .account
+        .clone()
+        .or_else(|| std::env::var("RISEX_ACCOUNT").ok().filter(|s| !s.is_empty()));
 
     let ctx = AppContext {
         network,
@@ -33,6 +42,8 @@ async fn main() {
         format,
         verbose: cli.verbose,
         force: cli.yes,
+        private_key,
+        account,
     };
 
     match cli.command {

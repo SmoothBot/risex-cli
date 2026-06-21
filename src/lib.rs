@@ -25,6 +25,10 @@ pub struct AppContext {
     pub format: OutputFormat,
     pub verbose: bool,
     pub force: bool,
+    /// Account private key from flag/env (config is consulted on demand).
+    pub private_key: Option<String>,
+    /// Account address override from flag/env.
+    pub account: Option<String>,
 }
 
 impl AppContext {
@@ -33,6 +37,23 @@ impl AppContext {
         self.api_url
             .clone()
             .unwrap_or_else(|| self.network.rest_base().to_string())
+    }
+
+    /// Build a REST client for the resolved base URL.
+    pub fn client(&self) -> Result<client::RestClient> {
+        client::RestClient::new(&self.base_url())
+    }
+
+    /// Resolve trading credentials (flag > env > config).
+    pub fn credentials(&self) -> Result<config::Credentials> {
+        config::resolve_credentials(self.private_key.as_deref(), self.account.as_deref())
+    }
+
+    /// Resolve a signer and the account address it acts for.
+    pub fn signer_and_account(&self) -> Result<(signing::Signer, String)> {
+        let creds = self.credentials()?;
+        let signer = signing::Signer::from_key(creds.private_key.expose())?;
+        Ok((signer, creds.account))
     }
 }
 
@@ -56,8 +77,16 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub api_url: Option<String>,
 
+    /// Account private key (prefer `auth import` / RISEX_PRIVATE_KEY for safety).
+    #[arg(long, global = true)]
+    pub private_key: Option<String>,
+
+    /// Account address (derived from the key when omitted).
+    #[arg(long, global = true)]
+    pub account: Option<String>,
+
     /// Skip confirmation prompts for destructive operations.
-    #[arg(long, alias = "force", global = true)]
+    #[arg(short = 'y', long, alias = "force", global = true)]
     pub yes: bool,
 
     #[command(subcommand)]
@@ -126,6 +155,11 @@ pub enum Command {
     },
     /// Show system config (contract addresses, chain, maintenance).
     System,
+    /// Manage credentials and the JWT session (import/login/approve/…).
+    Auth {
+        #[command(subcommand)]
+        cmd: commands::auth::AuthCommand,
+    },
 }
 
 fn build_client(ctx: &AppContext) -> Result<client::RestClient> {
@@ -135,6 +169,11 @@ fn build_client(ctx: &AppContext) -> Result<client::RestClient> {
 /// Render-free executor: routes a parsed command to its handler and returns the
 /// structured output. Shared by CLI dispatch and (later) the MCP server.
 pub async fn execute_command(ctx: &AppContext, command: Command) -> Result<CommandOutput> {
+    // Non-market commands route to their own handlers.
+    if let Command::Auth { cmd } = command {
+        return commands::auth::execute(&cmd, ctx).await;
+    }
+
     let client = build_client(ctx)?;
     let market_cmd = match command {
         Command::Markets { market } => MarketCommand::Markets { market },
@@ -166,6 +205,7 @@ pub async fn execute_command(ctx: &AppContext, command: Command) -> Result<Comma
         },
         Command::Funding { market } => MarketCommand::Funding { market },
         Command::System => MarketCommand::System,
+        Command::Auth { .. } => unreachable!("handled above"),
     };
     market::execute(&market_cmd, &client, ctx.verbose).await
 }
