@@ -418,9 +418,13 @@ async fn orderbook(
         .fold(0.0_f64, f64::max);
     const BAR_WIDTH: usize = 24;
 
+    let price_header = match aggregate_tick {
+        Some(t) => format!("Price (agg {})", fmt_trim(t)),
+        None => "Price (raw)".to_string(),
+    };
     let headers = vec![
         "Side".into(),
-        "Price".into(),
+        price_header,
         "Cum Amount".into(),
         "Cum Notional".into(),
         "Depth".into(),
