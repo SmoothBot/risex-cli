@@ -77,6 +77,7 @@ pub enum Command {
         market: String,
     },
     /// Show the order book for a market.
+    #[command(alias = "book")]
     Orderbook {
         /// Market id, ticker, or name (btc, bitcoin, BTC/USDC, 1).
         market: String,
