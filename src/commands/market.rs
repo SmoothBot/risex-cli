@@ -154,13 +154,38 @@ async fn orderbook(
     let empty = vec![];
     let bids = data.get("bids").and_then(|b| b.as_array()).unwrap_or(&empty);
     let asks = data.get("asks").and_then(|a| a.as_array()).unwrap_or(&empty);
-    let headers = vec!["Side".into(), "Price".into(), "Quantity".into()];
+
+    let qty = |level: &Value| s(level, "quantity").parse::<f64>().unwrap_or(0.0);
+    let max_qty = bids
+        .iter()
+        .chain(asks.iter())
+        .map(qty)
+        .fold(0.0_f64, f64::max);
+    const BAR_WIDTH: usize = 24;
+
+    let headers = vec![
+        "Side".into(),
+        "Price".into(),
+        "Quantity".into(),
+        "Depth".into(),
+    ];
     let mut rows: Vec<Vec<String>> = Vec::new();
+    // Asks descending so the spread sits in the middle of the printout.
     for a in asks.iter().rev() {
-        rows.push(vec!["ask".into(), s(a, "price"), s(a, "quantity")]);
+        rows.push(vec![
+            "ask".into(),
+            s(a, "price"),
+            s(a, "quantity"),
+            depth_bar(qty(a), max_qty, BAR_WIDTH),
+        ]);
     }
     for b in bids.iter() {
-        rows.push(vec!["bid".into(), s(b, "price"), s(b, "quantity")]);
+        rows.push(vec![
+            "bid".into(),
+            s(b, "price"),
+            s(b, "quantity"),
+            depth_bar(qty(b), max_qty, BAR_WIDTH),
+        ]);
     }
     Ok(CommandOutput::new(data, headers, rows))
 }
@@ -257,6 +282,27 @@ async fn funding(client: &RestClient, market: &str, verbose: bool) -> Result<Com
     ))
 }
 
+/// Render an ASCII depth bar for `qty` relative to `max`, up to `width` cells.
+/// Uses 1/8-block partials so small levels are still visible.
+fn depth_bar(qty: f64, max: f64, width: usize) -> String {
+    if max <= 0.0 || qty <= 0.0 || width == 0 {
+        return String::new();
+    }
+    let units = (qty / max) * width as f64;
+    let full = units.floor() as usize;
+    let mut bar = "█".repeat(full.min(width));
+    if full < width {
+        let remainder = units - full as f64;
+        // eighths: ▏▎▍▌▋▊▉
+        let partials = ['▏', '▎', '▍', '▌', '▋', '▊', '▉'];
+        let idx = (remainder * 8.0).round() as usize;
+        if idx >= 1 {
+            bar.push(partials[(idx - 1).min(partials.len() - 1)]);
+        }
+    }
+    bar
+}
+
 async fn system(client: &RestClient, verbose: bool) -> Result<CommandOutput> {
     let data = client.public_get("/v1/system/config", &[], verbose).await?;
     let addresses = data.get("addresses").cloned().unwrap_or(Value::Null);
@@ -275,4 +321,34 @@ async fn system(client: &RestClient, verbose: bool) -> Result<CommandOutput> {
         ),
     ];
     Ok(CommandOutput::key_value(pairs, data))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn depth_bar_full_at_max() {
+        assert_eq!(depth_bar(10.0, 10.0, 5), "█████");
+    }
+
+    #[test]
+    fn depth_bar_half_fills_half_width() {
+        // 50% of 10 cells = 5 full blocks, no partial.
+        assert_eq!(depth_bar(5.0, 10.0, 10), "█████");
+    }
+
+    #[test]
+    fn depth_bar_empty_for_zero_or_no_max() {
+        assert_eq!(depth_bar(0.0, 10.0, 5), "");
+        assert_eq!(depth_bar(5.0, 0.0, 5), "");
+        assert_eq!(depth_bar(5.0, 10.0, 0), "");
+    }
+
+    #[test]
+    fn depth_bar_small_level_still_visible() {
+        // A tiny fraction should render at least a partial block, not blank.
+        let bar = depth_bar(1.0, 100.0, 10);
+        assert!(!bar.is_empty(), "small level should show a partial block");
+    }
 }
