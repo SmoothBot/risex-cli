@@ -30,6 +30,8 @@ pub struct AppContext {
     pub private_key: Option<String>,
     /// Account address override from flag/env.
     pub account: Option<String>,
+    /// Wallet-connect bridge base URL.
+    pub connect_url: String,
 }
 
 impl AppContext {
@@ -116,6 +118,10 @@ pub struct Cli {
     /// Account address (derived from the key when omitted).
     #[arg(long, global = true)]
     pub account: Option<String>,
+
+    /// Wallet-connect bridge URL (or RISEX_CONNECT_URL).
+    #[arg(long, global = true)]
+    pub connect_url: Option<String>,
 
     /// Skip confirmation prompts for destructive operations.
     #[arg(short = 'y', long, alias = "force", global = true)]
