@@ -1,5 +1,6 @@
 //! RISEx CLI library crate. The same execution path is shared by CLI
 //! invocations, the REPL, the MCP server, and integration tests.
+pub mod bridge;
 pub mod client;
 pub mod commands;
 pub mod config;

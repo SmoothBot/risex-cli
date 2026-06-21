@@ -31,6 +31,8 @@ colored = "3"
 uuid = { version = "1", features = ["v4"] }
 alloy = { version = "1", default-features = false, features = ["signer-local", "sol-types", "dyn-abi"] }
 hex = "0.4"
+tiny_http = "0.12"
+open = "5"
 
 [dev-dependencies]
 wiremock = "0.6"
