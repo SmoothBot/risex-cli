@@ -20,3 +20,13 @@ fn help_lists_binary_name() {
         .success()
         .stdout(predicate::str::contains("risex"));
 }
+
+#[test]
+fn completions_emit_a_script_with_subcommands() {
+    Command::cargo_bin("risex")
+        .unwrap()
+        .args(["completions", "zsh"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("_risex").and(predicate::str::contains("orderbook")));
+}

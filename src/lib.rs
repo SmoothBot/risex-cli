@@ -231,6 +231,11 @@ pub enum Command {
         #[arg(value_parser = ["cross", "isolated"])]
         mode: String,
     },
+    /// Generate a shell completion script (bash, zsh, fish, …).
+    Completions {
+        /// Target shell.
+        shell: clap_complete::Shell,
+    },
 }
 
 fn build_client(ctx: &AppContext) -> Result<client::RestClient> {
@@ -300,13 +305,21 @@ pub async fn execute_command(ctx: &AppContext, command: Command) -> Result<Comma
         | Command::Balance
         | Command::Close { .. }
         | Command::Leverage { .. }
-        | Command::Margin { .. } => unreachable!("handled above"),
+        | Command::Margin { .. }
+        | Command::Completions { .. } => unreachable!("handled above"),
     };
     market::execute(&market_cmd, &client, ctx.verbose).await
 }
 
 /// Central dispatch: execute a command and render its output.
 pub async fn dispatch(ctx: &AppContext, command: Command) -> Result<()> {
+    // Completion scripts are written raw to stdout, not rendered as output.
+    if let Command::Completions { shell } = command {
+        use clap::CommandFactory;
+        let mut cmd = Cli::command();
+        clap_complete::generate(shell, &mut cmd, "risex", &mut std::io::stdout());
+        return Ok(());
+    }
     let out = execute_command(ctx, command).await?;
     render(ctx.format, &out);
     Ok(())
