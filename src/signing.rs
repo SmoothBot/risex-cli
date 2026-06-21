@@ -79,6 +79,7 @@ impl Signer {
         Ok(format!("0x{}", hex::encode(bytes)))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn sign_permit_single(
         &self,
         d: &Eip712Domain,

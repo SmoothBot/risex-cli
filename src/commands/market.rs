@@ -72,7 +72,7 @@ pub async fn execute(
     }
 }
 
-fn s(v: &Value, key: &str) -> String {
+pub(crate) fn s(v: &Value, key: &str) -> String {
     v.get(key)
         .map(|x| match x {
             Value::String(s) => s.clone(),
@@ -147,7 +147,7 @@ async fn resolve_market_id(client: &RestClient, input: &str, verbose: bool) -> R
 
 /// Resolve a user-supplied identifier to the full market JSON object (so the
 /// caller can read its tick / config). Always consults `/v1/markets`.
-async fn resolve_market(client: &RestClient, input: &str, verbose: bool) -> Result<Value> {
+pub(crate) async fn resolve_market(client: &RestClient, input: &str, verbose: bool) -> Result<Value> {
     let data = client.public_get("/v1/markets", &[], verbose).await?;
     let empty = vec![];
     let list = data

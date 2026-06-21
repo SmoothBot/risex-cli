@@ -160,6 +160,39 @@ pub enum Command {
         #[command(subcommand)]
         cmd: commands::auth::AuthCommand,
     },
+    /// Place and manage orders.
+    Order {
+        #[command(subcommand)]
+        cmd: commands::trade::OrderCommand,
+    },
+    /// Show open positions.
+    Positions {
+        /// Filter to one market.
+        #[arg(long)]
+        market: Option<String>,
+    },
+    /// Show account balance.
+    Balance,
+    /// Close the open position in a market (reduce-only market order).
+    Close {
+        /// Market id, ticker, or name.
+        market: String,
+    },
+    /// Set leverage for a market.
+    Leverage {
+        /// Market id, ticker, or name.
+        market: String,
+        /// Leverage multiplier (e.g. 10).
+        leverage: f64,
+    },
+    /// Set margin mode for a market.
+    Margin {
+        /// Market id, ticker, or name.
+        market: String,
+        /// cross or isolated.
+        #[arg(value_parser = ["cross", "isolated"])]
+        mode: String,
+    },
 }
 
 fn build_client(ctx: &AppContext) -> Result<client::RestClient> {
@@ -172,6 +205,24 @@ pub async fn execute_command(ctx: &AppContext, command: Command) -> Result<Comma
     // Non-market commands route to their own handlers.
     if let Command::Auth { cmd } = command {
         return commands::auth::execute(&cmd, ctx).await;
+    }
+    if let Command::Order { cmd } = command {
+        return commands::trade::execute_order(&cmd, ctx).await;
+    }
+    if let Command::Positions { market } = command {
+        return commands::trade::positions(ctx, market.as_deref()).await;
+    }
+    if let Command::Balance = command {
+        return commands::trade::balance(ctx).await;
+    }
+    if let Command::Close { market } = command {
+        return commands::trade::close(ctx, &market).await;
+    }
+    if let Command::Leverage { market, leverage } = command {
+        return commands::trade::leverage(ctx, &market, leverage).await;
+    }
+    if let Command::Margin { market, mode } = command {
+        return commands::trade::margin(ctx, &market, &mode).await;
     }
 
     let client = build_client(ctx)?;
@@ -205,7 +256,13 @@ pub async fn execute_command(ctx: &AppContext, command: Command) -> Result<Comma
         },
         Command::Funding { market } => MarketCommand::Funding { market },
         Command::System => MarketCommand::System,
-        Command::Auth { .. } => unreachable!("handled above"),
+        Command::Auth { .. }
+        | Command::Order { .. }
+        | Command::Positions { .. }
+        | Command::Balance
+        | Command::Close { .. }
+        | Command::Leverage { .. }
+        | Command::Margin { .. } => unreachable!("handled above"),
     };
     market::execute(&market_cmd, &client, ctx.verbose).await
 }
