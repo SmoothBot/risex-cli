@@ -230,6 +230,41 @@ fn fmt_usd(x: f64) -> String {
     format!("{x:.2}")
 }
 
+/// A level with running totals accumulated outward from the best price.
+struct CumLevel {
+    price: f64,
+    cum_qty: f64,
+    cum_notional: f64,
+}
+
+/// Accumulate running qty/notional totals over `levels` (which must be ordered
+/// best price first), producing cumulative depth at each level.
+fn cumulate(levels: &[Level]) -> Vec<CumLevel> {
+    let mut cum_qty = 0.0;
+    let mut cum_notional = 0.0;
+    levels
+        .iter()
+        .map(|l| {
+            cum_qty += l.qty;
+            cum_notional += l.notional;
+            CumLevel {
+                price: l.price,
+                cum_qty,
+                cum_notional,
+            }
+        })
+        .collect()
+}
+
+/// Spread between best bid and best ask, in basis points of the mid price.
+fn spread_bps(best_bid: f64, best_ask: f64) -> f64 {
+    let mid = (best_bid + best_ask) / 2.0;
+    if mid <= 0.0 {
+        return 0.0;
+    }
+    (best_ask - best_bid) / mid * 10_000.0
+}
+
 async fn orderbook(
     client: &RestClient,
     market: &str,
@@ -263,46 +298,58 @@ async fn orderbook(
     ask_levels.truncate(depth as usize);
     bid_levels.truncate(depth as usize);
 
-    // The displayed measure (notional by default, base amount with --amount).
-    let measure = |l: &Level| if amount { l.qty } else { l.notional };
-    let max_measure = ask_levels
+    // Cumulative depth accumulated outward from the best price on each side.
+    let ask_cum = cumulate(&ask_levels);
+    let bid_cum = cumulate(&bid_levels);
+
+    // The displayed measure for the bar (cumulative notional by default,
+    // cumulative base amount with --amount).
+    let measure = |c: &CumLevel| if amount { c.cum_qty } else { c.cum_notional };
+    let max_measure = ask_cum
         .iter()
-        .chain(bid_levels.iter())
+        .chain(bid_cum.iter())
         .map(measure)
         .fold(0.0_f64, f64::max);
     const BAR_WIDTH: usize = 24;
 
-    let value_header = if amount { "Amount" } else { "Notional" };
     let headers = vec![
         "Side".into(),
         "Price".into(),
-        value_header.into(),
+        "Cum Amount".into(),
+        "Cum Notional".into(),
         "Depth".into(),
     ];
-    let fmt_value = |l: &Level| {
-        if amount {
-            fmt_trim(l.qty)
-        } else {
-            fmt_usd(l.notional)
-        }
-    };
 
     let mut rows: Vec<Vec<String>> = Vec::new();
-    // Asks worst-first so the best ask sits just above the spread.
-    for l in ask_levels.iter().rev() {
+    // Asks worst-first so the best ask sits just above the spread divider.
+    for c in ask_cum.iter().rev() {
         rows.push(vec![
             "ask".into(),
-            fmt_trim(l.price),
-            fmt_value(l),
-            depth_bar(measure(l), max_measure, BAR_WIDTH),
+            fmt_trim(c.price),
+            fmt_trim(c.cum_qty),
+            fmt_usd(c.cum_notional),
+            depth_bar(measure(c), max_measure, BAR_WIDTH),
         ]);
     }
-    for l in bid_levels.iter() {
+    // Spread divider row, with the spread in bps, between asks and bids.
+    if let (Some(best_ask), Some(best_bid)) = (ask_cum.first(), bid_cum.first()) {
+        let bps = spread_bps(best_bid.price, best_ask.price);
+        let gap = best_ask.price - best_bid.price;
+        rows.push(vec![
+            "spread".into(),
+            fmt_trim(gap),
+            format!("{bps:.2} bps"),
+            String::new(),
+            "─".repeat(BAR_WIDTH),
+        ]);
+    }
+    for c in bid_cum.iter() {
         rows.push(vec![
             "bid".into(),
-            fmt_trim(l.price),
-            fmt_value(l),
-            depth_bar(measure(l), max_measure, BAR_WIDTH),
+            fmt_trim(c.price),
+            fmt_trim(c.cum_qty),
+            fmt_usd(c.cum_notional),
+            depth_bar(measure(c), max_measure, BAR_WIDTH),
         ]);
     }
     Ok(CommandOutput::new(data, headers, rows))

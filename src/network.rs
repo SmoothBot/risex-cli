@@ -4,8 +4,8 @@ use clap::ValueEnum;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 pub enum Network {
-    #[default]
     Testnet,
+    #[default]
     Mainnet,
 }
 
@@ -57,8 +57,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_is_testnet() {
-        assert_eq!(Network::default(), Network::Testnet);
+    fn default_is_mainnet() {
+        assert_eq!(Network::default(), Network::Mainnet);
     }
 
     #[test]
