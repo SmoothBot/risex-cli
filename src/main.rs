@@ -35,6 +35,11 @@ async fn main() {
         .account
         .clone()
         .or_else(|| std::env::var("RISEX_ACCOUNT").ok().filter(|s| !s.is_empty()));
+    let connect_url = cli
+        .connect_url
+        .clone()
+        .or_else(|| std::env::var("RISEX_CONNECT_URL").ok().filter(|s| !s.is_empty()))
+        .unwrap_or_else(|| "https://connect.risescan.io".to_string());
 
     let ctx = AppContext {
         network,
@@ -44,6 +49,7 @@ async fn main() {
         force: cli.yes,
         private_key,
         account,
+        connect_url,
     };
 
     match cli.command {

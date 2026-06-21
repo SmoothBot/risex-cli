@@ -45,7 +45,22 @@ Resolution precedence is **flag > env var > default** for both:
 
 Idempotent GET requests automatically retry on transient network errors and 5xx responses (exponential backoff, up to 3 attempts).
 
-## Trading (JWT auth)
+## Connect a wallet (no private key)
+
+The recommended way to authenticate — your key never touches the CLI:
+
+```sh
+risex -n testnet auth connect                            # opens browser; sign Login in your wallet
+risex -n testnet auth connect --approve --budget 1000    # one-time; sign ApproveSingle in your wallet
+risex -n testnet order buy btc 0.001 --type market       # trades for the 7-day session, no browser
+```
+
+`auth connect` starts a one-shot `127.0.0.1` server, opens `connect.risescan.io`, and your wallet
+signs the EIP-712 payload there — only the **signature** returns to the CLI, which completes the API
+call and stores just the JWT. Override the page with `--connect-url` / `RISEX_CONNECT_URL`. Once
+connected, trading works with no key for the refresh window; when it lapses, run `auth connect` again.
+
+## Trading (JWT auth, with a stored key)
 
 RISEx uses a JWT session model: one on-chain `ApproveSingle` grants an operator a USD
 budget, then each session is a single `Login` signature — no per-order signing.

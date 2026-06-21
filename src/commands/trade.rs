@@ -151,9 +151,16 @@ async fn place(ctx: &AppContext, args: &OrderArgs, side: u32) -> Result<CommandO
         &format!("Order: {side_word} {} {name} @ {price_word}", args.size),
     )?;
 
-    let (signer, account) = ctx.signer_and_account()?;
-    let token =
-        session::ensure_token(&client, &signer, &account, ctx.network.label(), ctx.verbose).await?;
+    let account = ctx.account()?;
+    let signer = ctx.optional_signer();
+    let token = session::ensure_token(
+        &client,
+        &account,
+        ctx.network.label(),
+        signer.as_ref(),
+        ctx.verbose,
+    )
+    .await?;
     let body = json!({
         "market_id": market_id,
         "size_steps": size_steps,
@@ -189,9 +196,16 @@ async fn cancel(ctx: &AppContext, market_in: &str, order_id: &str) -> Result<Com
         .parse()
         .map_err(|_| RisexError::Validation("bad market id".into()))?;
     confirm_write(ctx, &format!("Cancel order {order_id} in {market_in}"))?;
-    let (signer, account) = ctx.signer_and_account()?;
-    let token =
-        session::ensure_token(&client, &signer, &account, ctx.network.label(), ctx.verbose).await?;
+    let account = ctx.account()?;
+    let signer = ctx.optional_signer();
+    let token = session::ensure_token(
+        &client,
+        &account,
+        ctx.network.label(),
+        signer.as_ref(),
+        ctx.verbose,
+    )
+    .await?;
     let resp = client
         .post_bearer(
             "/v1/orders/cancel",
@@ -216,9 +230,16 @@ async fn cancel_all(ctx: &AppContext, market_in: &str) -> Result<CommandOutput> 
         .parse()
         .map_err(|_| RisexError::Validation("bad market id".into()))?;
     confirm_write(ctx, &format!("Cancel ALL orders in {market_in}"))?;
-    let (signer, account) = ctx.signer_and_account()?;
-    let token =
-        session::ensure_token(&client, &signer, &account, ctx.network.label(), ctx.verbose).await?;
+    let account = ctx.account()?;
+    let signer = ctx.optional_signer();
+    let token = session::ensure_token(
+        &client,
+        &account,
+        ctx.network.label(),
+        signer.as_ref(),
+        ctx.verbose,
+    )
+    .await?;
     let resp = client
         .post_bearer(
             "/v1/orders/cancel-all",
@@ -358,9 +379,16 @@ pub async fn close(ctx: &AppContext, market_in: &str) -> Result<CommandOutput> {
         ctx,
         &format!("Close position in {market_in} ({size} @ market, reduce-only)"),
     )?;
-    let (signer, account) = ctx.signer_and_account()?;
-    let token =
-        session::ensure_token(&client, &signer, &account, ctx.network.label(), ctx.verbose).await?;
+    let account = ctx.account()?;
+    let signer = ctx.optional_signer();
+    let token = session::ensure_token(
+        &client,
+        &account,
+        ctx.network.label(),
+        signer.as_ref(),
+        ctx.verbose,
+    )
+    .await?;
     let body = json!({
         "market_id": market_id, "size_steps": size_steps, "price_ticks": 0,
         "side": close_side, "post_only": false, "reduce_only": true, "stp_mode": 0,
@@ -385,9 +413,16 @@ pub async fn leverage(ctx: &AppContext, market_in: &str, lev: f64) -> Result<Com
         .parse()
         .map_err(|_| RisexError::Validation("bad market id".into()))?;
     confirm_write(ctx, &format!("Set leverage {lev}x on {market_in}"))?;
-    let (signer, account) = ctx.signer_and_account()?;
-    let token =
-        session::ensure_token(&client, &signer, &account, ctx.network.label(), ctx.verbose).await?;
+    let account = ctx.account()?;
+    let signer = ctx.optional_signer();
+    let token = session::ensure_token(
+        &client,
+        &account,
+        ctx.network.label(),
+        signer.as_ref(),
+        ctx.verbose,
+    )
+    .await?;
     let resp = client
         .post_bearer(
             "/v1/account/leverage",
@@ -417,9 +452,16 @@ pub async fn margin(ctx: &AppContext, market_in: &str, mode: &str) -> Result<Com
         .parse()
         .map_err(|_| RisexError::Validation("bad market id".into()))?;
     confirm_write(ctx, &format!("Set {mode} margin on {market_in}"))?;
-    let (signer, account) = ctx.signer_and_account()?;
-    let token =
-        session::ensure_token(&client, &signer, &account, ctx.network.label(), ctx.verbose).await?;
+    let account = ctx.account()?;
+    let signer = ctx.optional_signer();
+    let token = session::ensure_token(
+        &client,
+        &account,
+        ctx.network.label(),
+        signer.as_ref(),
+        ctx.verbose,
+    )
+    .await?;
     let resp = client
         .post_bearer(
             "/v1/account/margin-mode",

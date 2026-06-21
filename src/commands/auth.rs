@@ -1,6 +1,10 @@
 //! Credential + JWT session management commands.
+use std::time::Duration;
+
 use clap::Subcommand;
 use serde_json::json;
+
+use crate::bridge::Bridge;
 
 use crate::config::{self, mask_address};
 use crate::errors::{Result, RisexError};
@@ -31,6 +35,18 @@ pub enum AuthCommand {
     Refresh,
     /// Clear the cached session and stored credentials.
     Reset,
+    /// Connect a wallet in the browser (no private key needed).
+    Connect {
+        /// Sign a one-time ApproveSingle instead of logging in.
+        #[arg(long)]
+        approve: bool,
+        /// Budget in USD for --approve.
+        #[arg(long)]
+        budget: Option<f64>,
+        /// Allowance expiry for --approve (30d default, 12h, 3600s, or unix).
+        #[arg(long)]
+        expiry: Option<String>,
+    },
 }
 
 pub async fn execute(cmd: &AuthCommand, ctx: &AppContext) -> Result<CommandOutput> {
@@ -42,7 +58,101 @@ pub async fn execute(cmd: &AuthCommand, ctx: &AppContext) -> Result<CommandOutpu
         AuthCommand::Allowance => allowance(ctx).await,
         AuthCommand::Refresh => refresh(ctx).await,
         AuthCommand::Reset => reset(ctx),
+        AuthCommand::Connect {
+            approve,
+            budget,
+            expiry,
+        } => connect(ctx, *approve, *budget, expiry.as_deref()).await,
     }
+}
+
+async fn connect(
+    ctx: &AppContext,
+    approve: bool,
+    budget: Option<f64>,
+    expiry: Option<&str>,
+) -> Result<CommandOutput> {
+    let action = if approve { "approve" } else { "login" };
+    if approve && budget.is_none() {
+        return Err(RisexError::Validation("--approve requires --budget".into()));
+    }
+
+    let bridge = Bridge::start()?;
+    let port = bridge.port();
+    let state = bridge.state().to_string();
+
+    let mut url = format!(
+        "{}/cli?network={}&callback=http://127.0.0.1:{}&state={}&action={}",
+        ctx.connect_url.trim_end_matches('/'),
+        ctx.network.label(),
+        port,
+        state,
+        action
+    );
+    if approve {
+        url.push_str(&format!("&budget={}", budget.unwrap()));
+        if let Some(e) = expiry {
+            url.push_str(&format!("&expiry={e}"));
+        }
+    }
+
+    if std::env::var_os("RISEX_NO_BROWSER").is_some() {
+        eprintln!("BRIDGE port={port} state={state}");
+        eprintln!("Open: {url}");
+    } else if open::that(&url).is_err() {
+        eprintln!("Could not open a browser automatically. Open this URL:\n{url}");
+    } else {
+        eprintln!("Opened your browser to connect a wallet… (waiting up to 180s)");
+    }
+
+    let cb = tokio::task::spawn_blocking(move || bridge.await_callback(Duration::from_secs(180)))
+        .await
+        .map_err(|e| RisexError::Network(format!("bridge join error: {e}")))??;
+
+    let client = ctx.client()?;
+    if cb.action == "login" {
+        let body = json!({
+            "account": cb.account,
+            "nonce": cb.fields.get("nonce"),
+            "deadline": cb.fields.get("deadline"),
+            "signature": cb.fields.get("signature"),
+        });
+        let resp = client.post_signed("/v1/auth/login", body, ctx.verbose).await?;
+        session::store_tokens(ctx.network.label(), &cb.account, &resp)?;
+        persist_account(&cb.account)?;
+        Ok(CommandOutput::message(&format!(
+            "Connected as {} ({}).",
+            mask_address(&cb.account),
+            ctx.network
+        )))
+    } else {
+        let body = json!({
+            "account": cb.account,
+            "operator": cb.fields.get("operator"),
+            "budget": cb.fields.get("budget"),
+            "allowance_expiry": cb.fields.get("allowance_expiry"),
+            "nonce_anchor": cb.fields.get("nonce_anchor"),
+            "nonce_bitmap_index": cb.fields.get("nonce_bitmap_index"),
+            "signature": cb.fields.get("signature"),
+        });
+        let resp = client
+            .post_signed("/v1/auth/approve-single", body, ctx.verbose)
+            .await?;
+        persist_account(&cb.account)?;
+        Ok(CommandOutput::key_value(
+            vec![(
+                "transaction_hash".into(),
+                crate::commands::market::s(&resp, "transaction_hash"),
+            )],
+            resp,
+        ))
+    }
+}
+
+fn persist_account(account: &str) -> Result<()> {
+    let mut cfg = config::load()?;
+    cfg.auth.account = Some(account.to_string());
+    config::save(&cfg)
 }
 
 fn import(ctx: &AppContext) -> Result<CommandOutput> {
@@ -75,13 +185,14 @@ async fn status(ctx: &AppContext) -> Result<CommandOutput> {
 }
 
 async fn login(ctx: &AppContext) -> Result<CommandOutput> {
-    let (signer, account) = ctx.signer_and_account()?;
+    let account = ctx.account()?;
+    let signer = ctx.optional_signer();
     let client = ctx.client()?;
     let token = session::ensure_token(
         &client,
-        &signer,
         &account,
         ctx.network.label(),
+        signer.as_ref(),
         ctx.verbose,
     )
     .await?;
@@ -162,14 +273,15 @@ async fn allowance(ctx: &AppContext) -> Result<CommandOutput> {
 }
 
 async fn refresh(ctx: &AppContext) -> Result<CommandOutput> {
-    let (signer, account) = ctx.signer_and_account()?;
+    let account = ctx.account()?;
+    let signer = ctx.optional_signer();
     let client = ctx.client()?;
     session::clear(ctx.network.label(), &account)?;
     let token = session::ensure_token(
         &client,
-        &signer,
         &account,
         ctx.network.label(),
+        signer.as_ref(),
         ctx.verbose,
     )
     .await?;

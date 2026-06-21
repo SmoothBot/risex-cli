@@ -1,5 +1,6 @@
 //! RISEx CLI library crate. The same execution path is shared by CLI
 //! invocations, the REPL, the MCP server, and integration tests.
+pub mod bridge;
 pub mod client;
 pub mod commands;
 pub mod config;
@@ -29,6 +30,8 @@ pub struct AppContext {
     pub private_key: Option<String>,
     /// Account address override from flag/env.
     pub account: Option<String>,
+    /// Wallet-connect bridge base URL.
+    pub connect_url: String,
 }
 
 impl AppContext {
@@ -54,6 +57,37 @@ impl AppContext {
         let creds = self.credentials()?;
         let signer = signing::Signer::from_key(creds.private_key.expose())?;
         Ok((signer, creds.account))
+    }
+
+    fn resolve_key(&self) -> Option<String> {
+        self.private_key
+            .clone()
+            .or_else(|| std::env::var("RISEX_PRIVATE_KEY").ok().filter(|s| !s.is_empty()))
+            .or_else(|| config::load().ok().and_then(|c| c.auth.private_key))
+    }
+
+    /// The account address: explicit (flag/env/config) else derived from the key.
+    pub fn account(&self) -> Result<String> {
+        if let Some(a) = self
+            .account
+            .clone()
+            .or_else(|| std::env::var("RISEX_ACCOUNT").ok().filter(|s| !s.is_empty()))
+            .or_else(|| config::load().ok().and_then(|c| c.auth.account))
+        {
+            return Ok(a);
+        }
+        let key = self.resolve_key().ok_or_else(|| {
+            errors::RisexError::Auth(
+                "No account configured. Run `risex auth connect` or set --account.".into(),
+            )
+        })?;
+        Ok(signing::Signer::from_key(&key)?.address())
+    }
+
+    /// A signer, only if a private key is resolvable.
+    pub fn optional_signer(&self) -> Option<signing::Signer> {
+        self.resolve_key()
+            .and_then(|k| signing::Signer::from_key(&k).ok())
     }
 }
 
@@ -84,6 +118,10 @@ pub struct Cli {
     /// Account address (derived from the key when omitted).
     #[arg(long, global = true)]
     pub account: Option<String>,
+
+    /// Wallet-connect bridge URL (or RISEX_CONNECT_URL).
+    #[arg(long, global = true)]
+    pub connect_url: Option<String>,
 
     /// Skip confirmation prompts for destructive operations.
     #[arg(short = 'y', long, alias = "force", global = true)]
