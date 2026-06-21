@@ -94,6 +94,12 @@ fn canonical_ticker(input: &str) -> &str {
     }
 }
 
+/// Whether a market should be shown/selectable. Deprecated markets carry a
+/// `[deprecated-…]` marker in their display name and are hidden everywhere.
+fn is_active_market(m: &Value) -> bool {
+    !s(m, "display_name").to_ascii_lowercase().contains("deprecated")
+}
+
 /// Does this market match a user-supplied identifier? Accepts the numeric
 /// market id, the display name (`BTC/USDC`), the compacted name (`btcusdc`),
 /// or the base ticker (`btc` / `bitcoin`). Case-insensitive.
@@ -120,11 +126,15 @@ async fn resolve_market_id(client: &RestClient, input: &str, verbose: bool) -> R
         .get("markets")
         .and_then(|m| m.as_array())
         .unwrap_or(&empty);
-    if let Some(m) = list.iter().find(|m| market_matches(m, trimmed)) {
+    if let Some(m) = list
+        .iter()
+        .find(|m| is_active_market(m) && market_matches(m, trimmed))
+    {
         return Ok(s(m, "market_id"));
     }
     let available: Vec<String> = list
         .iter()
+        .filter(|m| is_active_market(m))
         .map(|m| s(m, "display_name"))
         .filter(|n| !n.is_empty())
         .take(12)
@@ -144,11 +154,15 @@ async fn resolve_market(client: &RestClient, input: &str, verbose: bool) -> Resu
         .get("markets")
         .and_then(|m| m.as_array())
         .unwrap_or(&empty);
-    if let Some(m) = list.iter().find(|m| market_matches(m, input)) {
+    if let Some(m) = list
+        .iter()
+        .find(|m| is_active_market(m) && market_matches(m, input))
+    {
         return Ok((*m).clone());
     }
     let available: Vec<String> = list
         .iter()
+        .filter(|m| is_active_market(m))
         .map(|m| s(m, "display_name"))
         .filter(|n| !n.is_empty())
         .take(12)
@@ -176,19 +190,36 @@ async fn markets(
         .get("markets")
         .and_then(|m| m.as_array())
         .unwrap_or(&empty);
+
+    let vol = |m: &Value| s(m, "quote_volume_24h").parse::<f64>().unwrap_or(0.0);
+    let mut markets: Vec<&Value> = list
+        .iter()
+        .filter(|m| {
+            is_active_market(m)
+                && match filter {
+                    Some(f) => market_matches(m, f),
+                    None => true,
+                }
+        })
+        .collect();
+    // Sort by 24h quote volume, highest first.
+    markets.sort_by(|a, b| {
+        vol(b)
+            .partial_cmp(&vol(a))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
     let headers = vec![
         "ID".into(),
         "Market".into(),
         "Last".into(),
         "Mark".into(),
         "Index".into(),
+        "24h Vol".into(),
+        "OI".into(),
     ];
-    let rows = list
+    let rows = markets
         .iter()
-        .filter(|m| match filter {
-            Some(f) => market_matches(m, f),
-            None => true,
-        })
         .map(|m| {
             vec![
                 s(m, "market_id"),
@@ -196,6 +227,8 @@ async fn markets(
                 fmt_price_to_tick(m, "last_price"),
                 fmt_price_to_tick(m, "mark_price"),
                 fmt_price_to_tick(m, "index_price"),
+                fmt_thousands(&s(m, "quote_volume_24h"), 0),
+                fmt_thousands(&s(m, "open_interest"), 2),
             ]
         })
         .collect();
@@ -211,7 +244,7 @@ async fn ticker(client: &RestClient, market: &str, verbose: bool) -> Result<Comm
         .and_then(|m| m.as_array())
         .unwrap_or(&empty)
         .iter()
-        .find(|m| market_matches(m, market))
+        .find(|m| is_active_market(m) && market_matches(m, market))
         .cloned()
         .unwrap_or(Value::Null);
     let pairs = vec![
@@ -317,6 +350,39 @@ fn fmt_trim(x: f64) -> String {
 /// Format a notional (USD) value with two decimals.
 fn fmt_usd(x: f64) -> String {
     format!("{x:.2}")
+}
+
+/// Format a number with thousands separators and `decimals` fractional digits.
+/// Falls back to the raw string if it can't be parsed.
+fn fmt_thousands(raw: &str, decimals: usize) -> String {
+    let Ok(x) = raw.parse::<f64>() else {
+        return raw.to_string();
+    };
+    let neg = x.is_sign_negative() && x != 0.0;
+    let s = format!("{:.*}", decimals, x.abs());
+    let (int_part, frac) = match s.split_once('.') {
+        Some((a, b)) => (a.to_string(), Some(b.to_string())),
+        None => (s, None),
+    };
+    let chars: Vec<char> = int_part.chars().collect();
+    let len = chars.len();
+    let mut grouped = String::new();
+    for (i, c) in chars.iter().enumerate() {
+        if i > 0 && (len - i) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(*c);
+    }
+    let mut out = String::new();
+    if neg {
+        out.push('-');
+    }
+    out.push_str(&grouped);
+    if let Some(f) = frac {
+        out.push('.');
+        out.push_str(&f);
+    }
+    out
 }
 
 /// Number of fractional digits implied by a price tick string,
