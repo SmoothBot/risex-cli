@@ -1,7 +1,6 @@
 //! One-shot localhost callback server for the browser auth bridge.
 //! Binds 127.0.0.1 on a random port, accepts a single signed POST /callback,
 //! validates the CSRF `state`, and returns the parsed payload.
-use std::io::Read;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
