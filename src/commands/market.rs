@@ -368,7 +368,7 @@ fn fmt_thousands(raw: &str, decimals: usize) -> String {
     let len = chars.len();
     let mut grouped = String::new();
     for (i, c) in chars.iter().enumerate() {
-        if i > 0 && (len - i) % 3 == 0 {
+        if i > 0 && (len - i).is_multiple_of(3) {
             grouped.push(',');
         }
         grouped.push(*c);
