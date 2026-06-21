@@ -11,9 +11,25 @@ async fn main() {
     let cli = Cli::parse();
     let format = cli.output.unwrap_or(OutputFormat::Table);
 
+    // Resolution precedence: CLI flag > env var > default.
+    let network = cli
+        .network
+        .or_else(|| {
+            std::env::var("RISEX_NETWORK")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .and_then(|s| s.parse::<Network>().ok())
+        })
+        .unwrap_or_default();
+    let api_url = cli.api_url.clone().or_else(|| {
+        std::env::var("RISEX_API_URL")
+            .ok()
+            .filter(|s| !s.is_empty())
+    });
+
     let ctx = AppContext {
-        network: cli.network.unwrap_or(Network::default()),
-        api_url: cli.api_url.clone(),
+        network,
+        api_url,
         format,
         verbose: cli.verbose,
         force: cli.yes,

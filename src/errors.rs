@@ -12,7 +12,12 @@ pub enum RisexError {
     #[error("{0}")]
     Auth(String),
     #[error("{message}")]
-    RateLimit { message: String, retryable: bool },
+    RateLimit {
+        message: String,
+        retryable: bool,
+        suggestion: Option<String>,
+        docs_url: Option<String>,
+    },
     #[error("{0}")]
     Validation(String),
     #[error("{0}")]
@@ -47,11 +52,25 @@ impl RisexError {
 
     pub fn to_json_envelope(&self) -> serde_json::Value {
         match self {
-            Self::RateLimit { message, retryable } => json!({
-                "error": "rate_limit",
-                "message": message,
-                "retryable": retryable,
-            }),
+            Self::RateLimit {
+                message,
+                retryable,
+                suggestion,
+                docs_url,
+            } => {
+                let mut env = json!({
+                    "error": "rate_limit",
+                    "message": message,
+                    "retryable": retryable,
+                });
+                if let Some(s) = suggestion {
+                    env["suggestion"] = json!(s);
+                }
+                if let Some(d) = docs_url {
+                    env["docs_url"] = json!(d);
+                }
+                env
+            }
             other => json!({
                 "error": other.category(),
                 "message": other.to_string(),
@@ -97,7 +116,13 @@ mod tests {
         assert_eq!(RisexError::Api("x".into()).category(), "api");
         assert_eq!(RisexError::Validation("x".into()).category(), "validation");
         assert_eq!(
-            RisexError::RateLimit { message: "x".into(), retryable: true }.category(),
+            RisexError::RateLimit {
+                message: "x".into(),
+                retryable: true,
+                suggestion: None,
+                docs_url: None
+            }
+            .category(),
             "rate_limit"
         );
     }
@@ -111,9 +136,15 @@ mod tests {
 
     #[test]
     fn rate_limit_envelope_includes_retryable() {
-        let env = RisexError::RateLimit { message: "slow down".into(), retryable: true }
-            .to_json_envelope();
+        let env = RisexError::RateLimit {
+            message: "slow down".into(),
+            retryable: true,
+            suggestion: Some("wait a bit".into()),
+            docs_url: None,
+        }
+        .to_json_envelope();
         assert_eq!(env["error"], "rate_limit");
         assert_eq!(env["retryable"], true);
+        assert_eq!(env["suggestion"], "wait a bit");
     }
 }

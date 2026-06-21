@@ -52,6 +52,19 @@ impl std::fmt::Display for Network {
     }
 }
 
+impl std::str::FromStr for Network {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "mainnet" | "main" => Ok(Network::Mainnet),
+            "testnet" | "test" => Ok(Network::Testnet),
+            other => Err(format!(
+                "unknown network '{other}' (expected 'mainnet' or 'testnet')"
+            )),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

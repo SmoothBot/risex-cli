@@ -32,6 +32,38 @@ async fn run(uri: &str, args: &[&str]) -> Run {
     .unwrap()
 }
 
+/// Like `run`, but sets environment variables and does NOT pass `--api-url`.
+async fn run_with_env(envs: &[(&str, &str)], args: &[&str]) -> Run {
+    let envs: Vec<(String, String)> = envs
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    tokio::task::spawn_blocking(move || {
+        let mut cmd = Command::cargo_bin("risex").unwrap();
+        cmd.env_clear();
+        // Keep PATH/HOME so the process and dirs crate behave.
+        if let Ok(p) = std::env::var("PATH") {
+            cmd.env("PATH", p);
+        }
+        if let Ok(h) = std::env::var("HOME") {
+            cmd.env("HOME", h);
+        }
+        for (k, v) in &envs {
+            cmd.env(k, v);
+        }
+        cmd.args(&args);
+        let out = cmd.output().unwrap();
+        Run {
+            ok: out.status.success(),
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        }
+    })
+    .await
+    .unwrap()
+}
+
 /// A market fixture with configurable fields.
 #[allow(clippy::too_many_arguments)]
 fn market(
@@ -367,6 +399,47 @@ async fn server_429_maps_to_retryable_rate_limit() {
     let v: serde_json::Value = serde_json::from_str(r.stdout.trim()).unwrap();
     assert_eq!(v["error"], "rate_limit");
     assert_eq!(v["retryable"], true);
+    assert!(v["suggestion"].is_string(), "no suggestion: {v}");
+}
+
+// ---- retry + env overrides --------------------------------------------------
+
+#[tokio::test]
+async fn retries_transient_5xx_then_succeeds() {
+    let server = MockServer::start().await;
+    let markets = json!({ "data": { "markets": [
+        market("1", "BTC/USDC", "64000.1", "64000.1", "64000.1", "1", "1", "0.1")
+    ]}, "request_id": "t" });
+
+    // wiremock prioritizes the first-mounted matching mock, so mount the 503
+    // first (it serves the first 2 attempts, then exhausts) and the 200 as the
+    // lower-priority fallback the 3rd attempt falls through to.
+    Mock::given(method("GET"))
+        .and(path("/v1/markets"))
+        .respond_with(ResponseTemplate::new(503))
+        .up_to_n_times(2)
+        .expect(2) // fails the test unless retries actually consume both 503s
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/markets"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(markets))
+        .mount(&server)
+        .await;
+
+    let r = run(&server.uri(), &["markets"]).await;
+    assert!(r.ok, "should recover after retries; stderr: {}", r.stderr);
+    assert!(r.stdout.contains("BTC/USDC"));
+}
+
+#[tokio::test]
+async fn env_risex_api_url_is_honored() {
+    let server = MockServer::start().await;
+    mount_fixtures(&server).await;
+    // No --api-url flag; the base URL comes from RISEX_API_URL.
+    let r = run_with_env(&[("RISEX_API_URL", &server.uri())], &["markets"]).await;
+    assert!(r.ok, "stderr: {}", r.stderr);
+    assert!(r.stdout.contains("BTC/USDC"));
 }
 
 #[tokio::test]

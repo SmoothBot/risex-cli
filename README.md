@@ -32,9 +32,18 @@ risex system                       # contract addresses / chain info
 
 Global flags: `-o/--output table|json`, `-v/--verbose`, `-n/--network mainnet|testnet`, `--api-url <url>`.
 
-### Networks
+### Networks & environment
 
 Defaults to **mainnet**. Use `-n testnet` for the RISEx testnet.
+
+Resolution precedence is **flag > env var > default** for both:
+
+| Setting | Flag | Env var |
+|---|---|---|
+| Network | `-n/--network` | `RISEX_NETWORK` |
+| REST base URL | `--api-url` | `RISEX_API_URL` |
+
+Idempotent GET requests automatically retry on transient network errors and 5xx responses (exponential backoff, up to 3 attempts).
 
 ## Output
 

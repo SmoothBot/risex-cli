@@ -1,10 +1,17 @@
 //! Public REST client for RISEx. Unwraps the `{data, request_id}` envelope and
 //! maps non-2xx / error bodies to RisexError. Auth (bearer) is added in Phase 2.
+use std::time::Duration;
+
 use serde_json::Value;
 
 use crate::errors::{Result, RisexError};
 use crate::output;
 use crate::telemetry;
+
+/// Max retry attempts for idempotent requests on transient/5xx failures.
+const MAX_RETRIES: u32 = 3;
+/// Base backoff in milliseconds (doubles each attempt: 500ms, 1s, 2s).
+const INITIAL_BACKOFF_MS: u64 = 500;
 
 pub struct RestClient {
     http: reqwest::Client,
@@ -23,6 +30,8 @@ impl RestClient {
         })
     }
 
+    /// Public GET. Idempotent, so it retries transient network errors and 5xx
+    /// responses up to `MAX_RETRIES` with exponential backoff.
     pub async fn public_get(
         &self,
         path: &str,
@@ -30,21 +39,53 @@ impl RestClient {
         verbose: bool,
     ) -> Result<Value> {
         let url = format!("{}{}", self.base_url, path);
-        if verbose {
-            output::verbose(&format!("GET {url} {query:?}"));
+        let mut attempt: u32 = 0;
+        loop {
+            if verbose {
+                output::verbose(&format!("GET {url} {query:?}"));
+            }
+            let mut req = self.http.get(&url).query(query);
+            for (k, v) in telemetry::client_headers() {
+                req = req.header(k, v);
+            }
+
+            match req.send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    let body = resp.text().await.map_err(RisexError::from)?;
+                    if status.is_server_error() && attempt < MAX_RETRIES {
+                        attempt += 1;
+                        backoff(attempt, verbose, &format!("server error {status}")).await;
+                        continue;
+                    }
+                    if verbose {
+                        output::verbose(&format!("status {status}"));
+                    }
+                    return parse_envelope(status, &body);
+                }
+                Err(e) => {
+                    let transient = e.is_timeout() || e.is_connect();
+                    if transient && attempt < MAX_RETRIES {
+                        attempt += 1;
+                        backoff(attempt, verbose, &e.to_string()).await;
+                        continue;
+                    }
+                    return Err(RisexError::from(e));
+                }
+            }
         }
-        let mut req = self.http.get(&url).query(query);
-        for (k, v) in telemetry::client_headers() {
-            req = req.header(k, v);
-        }
-        let resp = req.send().await.map_err(RisexError::from)?;
-        let status = resp.status();
-        let body = resp.text().await.map_err(RisexError::from)?;
-        if verbose {
-            output::verbose(&format!("status {status}"));
-        }
-        parse_envelope(status, &body)
     }
+}
+
+/// Sleep with exponential backoff before retry `attempt` (1-based).
+async fn backoff(attempt: u32, verbose: bool, reason: &str) {
+    let ms = INITIAL_BACKOFF_MS * 2u64.pow(attempt - 1);
+    if verbose {
+        output::verbose(&format!(
+            "{reason}; retry {attempt}/{MAX_RETRIES} after {ms}ms"
+        ));
+    }
+    tokio::time::sleep(Duration::from_millis(ms)).await;
 }
 
 /// Unwrap `{data, request_id}` on success; map errors otherwise.
@@ -82,6 +123,12 @@ fn parse_envelope(status: reqwest::StatusCode, body: &str) -> Result<Value> {
         return Err(RisexError::RateLimit {
             message: format!("rate limited: {message}"),
             retryable: true,
+            suggestion: Some(
+                "Back off a few seconds before retrying. The RISEx REST API allows \
+                 roughly 500 requests per 10 seconds."
+                    .into(),
+            ),
+            docs_url: None,
         });
     }
     if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
