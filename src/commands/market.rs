@@ -15,6 +15,8 @@ pub enum MarketCommand {
     Orderbook {
         market: String,
         depth: u32,
+        aggregate: Option<f64>,
+        amount: bool,
     },
     Trades {
         market: String,
@@ -40,9 +42,12 @@ pub async fn execute(
     match cmd {
         MarketCommand::Markets { market } => markets(client, market.as_deref(), verbose).await,
         MarketCommand::Ticker { market } => ticker(client, market, verbose).await,
-        MarketCommand::Orderbook { market, depth } => {
-            orderbook(client, market, *depth, verbose).await
-        }
+        MarketCommand::Orderbook {
+            market,
+            depth,
+            aggregate,
+            amount,
+        } => orderbook(client, market, *depth, *aggregate, *amount, verbose).await,
         MarketCommand::Trades { market, limit } => trades(client, market, *limit, verbose).await,
         MarketCommand::Candles {
             market,
@@ -137,54 +142,167 @@ async fn ticker(client: &RestClient, market: &str, verbose: bool) -> Result<Comm
     Ok(CommandOutput::key_value(pairs, found))
 }
 
+/// A single (possibly aggregated) order-book level.
+struct Level {
+    price: f64,
+    qty: f64,
+    notional: f64,
+}
+
+/// Parse a `[{price, quantity}]` JSON array into `(price, qty)` pairs.
+fn parse_pairs(arr: &[Value]) -> Vec<(f64, f64)> {
+    arr.iter()
+        .filter_map(|l| {
+            let p = s(l, "price").parse::<f64>().ok()?;
+            let q = s(l, "quantity").parse::<f64>().ok()?;
+            Some((p, q))
+        })
+        .collect()
+}
+
+/// Raw (un-aggregated) levels, best price first (bids descending, asks ascending).
+fn raw_levels(pairs: &[(f64, f64)], is_bid: bool) -> Vec<Level> {
+    let mut out: Vec<Level> = pairs
+        .iter()
+        .filter(|(_, q)| *q > 0.0)
+        .map(|&(price, qty)| Level {
+            price,
+            qty,
+            notional: price * qty,
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        if is_bid {
+            b.price.partial_cmp(&a.price).unwrap()
+        } else {
+            a.price.partial_cmp(&b.price).unwrap()
+        }
+    });
+    out
+}
+
+/// Aggregate levels into price buckets of `tick`. Bids floor to the bucket,
+/// asks ceil, so a bucket never crosses the mid. Best price first.
+fn aggregate(pairs: &[(f64, f64)], tick: f64, is_bid: bool) -> Vec<Level> {
+    use std::collections::BTreeMap;
+    let mut buckets: BTreeMap<i64, (f64, f64)> = BTreeMap::new();
+    for &(price, qty) in pairs {
+        if qty <= 0.0 {
+            continue;
+        }
+        let idx = if is_bid {
+            (price / tick).floor() as i64
+        } else {
+            (price / tick).ceil() as i64
+        };
+        let e = buckets.entry(idx).or_insert((0.0, 0.0));
+        e.0 += qty;
+        e.1 += price * qty;
+    }
+    // BTreeMap iterates ascending by idx (= ascending price) → best-first for asks.
+    let mut out: Vec<Level> = buckets
+        .into_iter()
+        .map(|(idx, (qty, notional))| Level {
+            price: idx as f64 * tick,
+            qty,
+            notional,
+        })
+        .collect();
+    if is_bid {
+        out.reverse(); // descending price → best bid first
+    }
+    out
+}
+
+/// Format a price/amount: up to 10 decimals, trailing zeros trimmed.
+fn fmt_trim(x: f64) -> String {
+    let s = format!("{x:.10}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    if s.is_empty() {
+        "0".to_string()
+    } else {
+        s.to_string()
+    }
+}
+
+/// Format a notional (USD) value with two decimals.
+fn fmt_usd(x: f64) -> String {
+    format!("{x:.2}")
+}
+
 async fn orderbook(
     client: &RestClient,
     market: &str,
     depth: u32,
+    aggregate_tick: Option<f64>,
+    amount: bool,
     verbose: bool,
 ) -> Result<CommandOutput> {
-    let depth_s = depth.to_string();
+    // When aggregating, pull a wider raw set so buckets have levels to gather.
+    let raw_limit: u32 = if aggregate_tick.is_some() {
+        500
+    } else {
+        depth
+    };
+    let raw_limit_s = raw_limit.to_string();
     let data = client
         .public_get(
             "/v1/orderbook",
-            &[("market_id", market), ("limit", &depth_s)],
+            &[("market_id", market), ("limit", &raw_limit_s)],
             verbose,
         )
         .await?;
     let empty = vec![];
-    let bids = data.get("bids").and_then(|b| b.as_array()).unwrap_or(&empty);
-    let asks = data.get("asks").and_then(|a| a.as_array()).unwrap_or(&empty);
+    let bids = parse_pairs(data.get("bids").and_then(|b| b.as_array()).unwrap_or(&empty));
+    let asks = parse_pairs(data.get("asks").and_then(|a| a.as_array()).unwrap_or(&empty));
 
-    let qty = |level: &Value| s(level, "quantity").parse::<f64>().unwrap_or(0.0);
-    let max_qty = bids
+    let (mut ask_levels, mut bid_levels) = match aggregate_tick {
+        Some(tick) if tick > 0.0 => (aggregate(&asks, tick, false), aggregate(&bids, tick, true)),
+        _ => (raw_levels(&asks, false), raw_levels(&bids, true)),
+    };
+    ask_levels.truncate(depth as usize);
+    bid_levels.truncate(depth as usize);
+
+    // The displayed measure (notional by default, base amount with --amount).
+    let measure = |l: &Level| if amount { l.qty } else { l.notional };
+    let max_measure = ask_levels
         .iter()
-        .chain(asks.iter())
-        .map(qty)
+        .chain(bid_levels.iter())
+        .map(measure)
         .fold(0.0_f64, f64::max);
     const BAR_WIDTH: usize = 24;
 
+    let value_header = if amount { "Amount" } else { "Notional" };
     let headers = vec![
         "Side".into(),
         "Price".into(),
-        "Quantity".into(),
+        value_header.into(),
         "Depth".into(),
     ];
+    let fmt_value = |l: &Level| {
+        if amount {
+            fmt_trim(l.qty)
+        } else {
+            fmt_usd(l.notional)
+        }
+    };
+
     let mut rows: Vec<Vec<String>> = Vec::new();
-    // Asks descending so the spread sits in the middle of the printout.
-    for a in asks.iter().rev() {
+    // Asks worst-first so the best ask sits just above the spread.
+    for l in ask_levels.iter().rev() {
         rows.push(vec![
             "ask".into(),
-            s(a, "price"),
-            s(a, "quantity"),
-            depth_bar(qty(a), max_qty, BAR_WIDTH),
+            fmt_trim(l.price),
+            fmt_value(l),
+            depth_bar(measure(l), max_measure, BAR_WIDTH),
         ]);
     }
-    for b in bids.iter() {
+    for l in bid_levels.iter() {
         rows.push(vec![
             "bid".into(),
-            s(b, "price"),
-            s(b, "quantity"),
-            depth_bar(qty(b), max_qty, BAR_WIDTH),
+            fmt_trim(l.price),
+            fmt_value(l),
+            depth_bar(measure(l), max_measure, BAR_WIDTH),
         ]);
     }
     Ok(CommandOutput::new(data, headers, rows))
@@ -326,6 +444,41 @@ async fn system(client: &RestClient, verbose: bool) -> Result<CommandOutput> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_levels_sort_best_first() {
+        let asks = raw_levels(&[(101.0, 1.0), (100.0, 2.0)], false);
+        assert_eq!(asks[0].price, 100.0); // best (lowest) ask first
+        let bids = raw_levels(&[(99.0, 1.0), (100.0, 2.0)], true);
+        assert_eq!(bids[0].price, 100.0); // best (highest) bid first
+    }
+
+    #[test]
+    fn raw_level_notional_is_price_times_qty() {
+        let lvls = raw_levels(&[(100.0, 2.0)], false);
+        assert_eq!(lvls[0].qty, 2.0);
+        assert_eq!(lvls[0].notional, 200.0);
+    }
+
+    #[test]
+    fn aggregate_asks_round_up_into_one_bucket() {
+        // tick=1: ceil(100.4)=101, ceil(100.6)=101 → single bucket at 101.
+        let out = aggregate(&[(100.4, 1.0), (100.6, 2.0)], 1.0, false);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].price, 101.0);
+        assert_eq!(out[0].qty, 3.0);
+        assert!((out[0].notional - (100.4 * 1.0 + 100.6 * 2.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn aggregate_bids_round_down_and_sort_descending() {
+        // tick=10: floor into buckets 100 and 90, best (highest) first.
+        let out = aggregate(&[(104.0, 1.0), (95.0, 2.0), (101.0, 1.0)], 10.0, true);
+        assert_eq!(out[0].price, 100.0);
+        assert_eq!(out[0].qty, 2.0); // 104 and 101 both floor to 100
+        assert_eq!(out[1].price, 90.0);
+        assert_eq!(out[1].qty, 2.0);
+    }
 
     #[test]
     fn depth_bar_full_at_max() {
