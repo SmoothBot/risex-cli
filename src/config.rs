@@ -138,9 +138,62 @@ fn atomic_write_restricted(path: &Path, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
+use crate::signing::Signer;
+
+pub struct Credentials {
+    pub private_key: SecretValue,
+    pub account: String,
+}
+
+fn env_nonempty(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|s| !s.is_empty())
+}
+
+/// Resolve trading credentials: flag > env > config. The account address is
+/// derived from the private key when not explicitly provided.
+pub fn resolve_credentials(
+    flag_key: Option<&str>,
+    flag_account: Option<&str>,
+) -> Result<Credentials> {
+    let key = flag_key
+        .map(|s| s.to_string())
+        .or_else(|| env_nonempty("RISEX_PRIVATE_KEY"))
+        .or_else(|| load().ok().and_then(|c| c.auth.private_key));
+    let key = key.ok_or_else(|| {
+        RisexError::Auth(
+            "No private key found. Use `risex auth import --private-key 0x…`, set \
+             RISEX_PRIVATE_KEY, or pass --private-key."
+                .into(),
+        )
+    })?;
+
+    // Validate + derive address.
+    let signer = Signer::from_key(&key)?;
+    let derived = signer.address();
+
+    let account = flag_account
+        .map(|s| s.to_string())
+        .or_else(|| env_nonempty("RISEX_ACCOUNT"))
+        .or_else(|| load().ok().and_then(|c| c.auth.account))
+        .unwrap_or(derived);
+
+    Ok(Credentials {
+        private_key: SecretValue::new(key),
+        account,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_prefers_flag_key_and_derives_account() {
+        let key = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+        let c = resolve_credentials(Some(key), None).unwrap();
+        assert_eq!(c.account, "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+        assert_eq!(c.private_key.expose(), key);
+    }
 
     #[test]
     fn secret_is_redacted_in_debug_and_display() {
