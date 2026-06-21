@@ -45,6 +45,37 @@ Resolution precedence is **flag > env var > default** for both:
 
 Idempotent GET requests automatically retry on transient network errors and 5xx responses (exponential backoff, up to 3 attempts).
 
+## Trading (JWT auth)
+
+RISEx uses a JWT session model: one on-chain `ApproveSingle` grants an operator a USD
+budget, then each session is a single `Login` signature — no per-order signing.
+
+**First-time setup on testnet** (recommended before mainnet):
+
+```sh
+risex auth import --private-key 0xYOURKEY     # stores key at ~/.config/risex/config.toml (0600)
+risex -n testnet auth approve --budget 1000   # one-time: signs PermitSingle, grants $1000 budget
+risex -n testnet auth status                  # allowance: active
+```
+
+**Open / inspect / close a position:**
+
+```sh
+risex -n testnet order buy btc 0.001 --type market     # open a long
+risex -n testnet positions                             # see it
+risex -n testnet order sell btc 0.001 --price 70000 --post-only   # resting limit short
+risex -n testnet order cancel btc <order-id>
+risex -n testnet close btc                             # reduce-only market close
+risex -n testnet balance
+risex -n testnet leverage btc 10
+risex -n testnet margin btc isolated
+```
+
+Credentials resolve **flag > env > config**: `--private-key` / `RISEX_PRIVATE_KEY`,
+`--account` / `RISEX_ACCOUNT` (account is derived from the key when omitted). The private key
+is never logged. Write commands prompt for confirmation (skip with `-y`) and print a red
+warning on **mainnet**.
+
 ## Output
 
 Human-readable tables by default; `-o json` emits single-line JSON for scripting. Errors are categorized (`api`, `auth`, `rate_limit`, `validation`, `network`, …) and, in JSON mode, returned as structured envelopes.
